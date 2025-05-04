@@ -1,109 +1,196 @@
-/// We derive Deserialize/Serialize so we can persist app state on shutdown.
-#[derive(serde::Deserialize, serde::Serialize)]
-#[serde(default)] // if we add new fields, give them default values when deserializing old state
-pub struct TemplateApp {
-    // Example stuff:
-    label: String,
+use eframe::{egui, App, CreationContext, Storage};
 
-    #[serde(skip)] // This how you opt-out of serialization of a field
-    value: f32,
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(default)]
+pub struct TemplateApp {
+    history: Vec<String>,
+    #[serde(skip)]
+    input: String,
+    #[serde(skip)]
+    command_history: Vec<String>,
+    #[serde(skip)]
+    history_index: Option<usize>,
+    #[serde(skip)]
+    force_focus: bool,
 }
 
 impl Default for TemplateApp {
     fn default() -> Self {
+        use chrono::Local;
+
+        let now = Local::now();
+        let time_string = now.format("Last login: %a %b %e %T on ttys000").to_string();
+
         Self {
-            // Example stuff:
-            label: "Hello World!".to_owned(),
-            value: 2.7,
+            history: vec![time_string],
+            input: String::new(),
+            command_history: vec![],
+            history_index: None,
+            force_focus: true,
         }
     }
 }
+
 
 impl TemplateApp {
-    /// Called once before the first frame.
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        // This is also where you can customize the look and feel of egui using
-        // `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
-
-        // Load previous app state (if any).
-        // Note that you must enable the `persistence` feature for this to work.
-        if let Some(storage) = cc.storage {
-            return eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
-        }
-
+    pub fn new(_cc: &CreationContext<'_>) -> Self {
         Default::default()
+    }
+
+    fn execute_command(&mut self, cmd: &str) {
+        if !cmd.trim().is_empty() {
+            self.command_history.push(cmd.to_owned());
+        }
+        self.history_index = None;
+
+        match cmd {
+            "" => {}
+            "ls" => {
+                self.history.push("Documents\tLibrary\tMusic\tPublic\tDesktop".to_owned());
+                self.history.push("Downloads\tMovies\tPictures".to_owned());
+            }
+            "pwd" => self.history.push("/Users/geongupark".to_owned()),
+            "about" => {
+                self.history.push("Geongu Park – System Software Engineer".to_owned());
+                self.history.push("Experienced in ARM virtualization, embedded C++, and Rust WebAssembly.".to_owned());
+            }
+            "help" => self.history.push("Available commands: ls, pwd, about, help".to_owned()),
+            other => self.history.push(format!("{}: command not found", other)),
+        }
     }
 }
 
-impl eframe::App for TemplateApp {
-    /// Called by the frame work to save state before shutdown.
-    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+impl App for TemplateApp {
+    fn save(&mut self, storage: &mut dyn Storage) {
         eframe::set_value(storage, eframe::APP_KEY, self);
     }
 
-    /// Called each time the UI needs repainting, which may be many times per second.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Put your widgets into a `SidePanel`, `TopBottomPanel`, `CentralPanel`, `Window` or `Area`.
-        // For inspiration and more examples, go to https://emilk.github.io/egui
-
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            // The top panel is often a good place for a menu bar:
-
             egui::menu::bar(ui, |ui| {
-                // NOTE: no File->Quit on web pages!
-                let is_web = cfg!(target_arch = "wasm32");
-                if !is_web {
+                if !cfg!(target_arch = "wasm32") {
                     ui.menu_button("File", |ui| {
                         if ui.button("Quit").clicked() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            ctx.request_repaint();
                         }
                     });
                     ui.add_space(16.0);
                 }
-
                 egui::widgets::global_theme_preference_buttons(ui);
             });
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            // The central panel the region left after adding TopPanel's and SidePanel's
-            ui.heading("eframe template");
-
-            ui.horizontal(|ui| {
-                ui.label("Write something: ");
-                ui.text_edit_singleline(&mut self.label);
-            });
-
-            ui.add(egui::Slider::new(&mut self.value, 0.0..=10.0).text("value"));
-            if ui.button("Increment").clicked() {
-                self.value += 1.0;
+            let panel_resp = ui.interact(
+                ui.max_rect(),
+                ui.id().with("central_click"),
+                egui::Sense::click(),
+            );
+            if panel_resp.clicked() {
+                self.force_focus = true;
             }
 
-            ui.separator();
+            let light_green = egui::Color32::from_rgb(144, 238, 144);
 
-            ui.add(egui::github_link_file!(
-                "https://github.com/emilk/eframe_template/blob/main/",
-                "Source code."
-            ));
+            egui::ScrollArea::vertical()
+                .stick_to_bottom(true)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    for line in &self.history {
+                        if ctx.style().visuals.dark_mode {
+                            ui.colored_label(light_green, line);
+                        } else {
+                            ui.label(line);
+                        }
+                    }
 
+                    ui.horizontal(|ui| {
+                        let prompt = "geongupark@CV ~ % ";
+                        if ctx.style().visuals.dark_mode {
+                            ui.colored_label(light_green, prompt);
+                        } else {
+                            ui.label(prompt);
+                        }
+
+                        let input_id = ui.id().with("cmd_input");
+
+                        if self.force_focus {
+                            ui.memory_mut(|mem| mem.request_focus(input_id));
+                            self.force_focus = false;
+                        }
+
+                        let mut text_edit = egui::TextEdit::singleline(&mut self.input)
+                            .id(input_id)
+                            .desired_width(ui.available_width())
+                            .frame(false);
+
+                        if ctx.style().visuals.dark_mode {
+                            text_edit = text_edit.text_color(light_green);
+                        }
+
+                        let response = ui.add(text_edit);
+
+                        let input = ctx.input(|i| i.clone());
+
+                        // ↑
+                        if input.key_pressed(egui::Key::ArrowUp) {
+                            match self.history_index {
+                                Some(0) | None if self.command_history.is_empty() => {}
+                                Some(n) if n > 0 => self.history_index = Some(n - 1),
+                                None => {
+                                    self.history_index = Some(self.command_history.len().saturating_sub(1));
+                                }
+                                _ => {}
+                            }
+
+                            if let Some(idx) = self.history_index {
+                                if let Some(cmd) = self.command_history.get(idx) {
+                                    self.input = cmd.clone();
+                                }
+                            }
+                        }
+
+                        // ↓
+                        if input.key_pressed(egui::Key::ArrowDown) {
+                            match self.history_index {
+                                Some(n) if n + 1 < self.command_history.len() => {
+                                    self.history_index = Some(n + 1);
+                                    self.input = self.command_history[n + 1].clone();
+                                }
+                                Some(_) => {
+                                    self.history_index = None;
+                                    self.input.clear();
+                                }
+                                None => {}
+                            }
+                        }
+
+                        // Enter
+                        if response.lost_focus() && input.key_pressed(egui::Key::Enter) {
+                            let cmd = self.input.trim().to_owned();
+                            self.history.push(format!("{}{}", prompt, cmd));
+                            self.execute_command(&cmd);
+                            self.input.clear();
+                            self.force_focus = true;
+                        }
+                    });
+
+                    ui.add_space(30.0);
+                });
+        });
+
+        egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
             ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                powered_by_egui_and_eframe(ui);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.label("Powered by ");
+                    ui.hyperlink_to("egui", "https://github.com/emilk/egui");
+                    ui.label(" and ");
+                    ui.hyperlink_to("eframe", "https://github.com/emilk/egui/tree/master/crates/eframe");
+                    ui.label(".");
+                });
                 egui::warn_if_debug_build(ui);
             });
         });
     }
-}
-
-fn powered_by_egui_and_eframe(ui: &mut egui::Ui) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        ui.label("Powered by ");
-        ui.hyperlink_to("egui", "https://github.com/emilk/egui");
-        ui.label(" and ");
-        ui.hyperlink_to(
-            "eframe",
-            "https://github.com/emilk/egui/tree/master/crates/eframe",
-        );
-        ui.label(".");
-    });
 }
